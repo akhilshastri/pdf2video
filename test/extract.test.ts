@@ -28,7 +28,18 @@ const nonWhite = async (path: string): Promise<number> => {
   return n;
 };
 
-const blankPdf = async (pages: Array<[number, number]>): Promise<Uint8Array> => {
+/** Counts clearly dark pixels (glyph strokes, ignoring anti-aliasing fringes). */
+const darkPixels = async (path: string): Promise<number> => {
+  const img = await loadImage(path);
+  const ctx = createCanvas(img.width, img.height).getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  const d = ctx.getImageData(0, 0, img.width, img.height).data;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i]! < 128) n++;
+  return n;
+};
+
+const blankPdf =async (pages: Array<[number, number]>): Promise<Uint8Array> => {
   const doc = await PDFDocument.create();
   for (const [w, h] of pages) doc.addPage([w, h]);
   return doc.save();
@@ -42,6 +53,17 @@ describe('extractPages', () => {
       expect((await size(path)).h).toBe(2160);
       expect(await nonWhite(path)).toBeGreaterThan(1000);
     }
+  });
+
+  // Regression: when pdfjs could not load its bundled standard fonts (asset paths given as file://
+  // URLs), Helvetica text fell back to a narrow system font with wide gaps. Line extents stay the
+  // same (same advance widths), but the strokes carry only ~60% of the ink: 6.2k vs 10.7k dark px
+  // at 1080 high, which is what this checks.
+  it('draws Helvetica text with the bundled standard font, not a system fallback', async () => {
+    const out = await extractPages({
+      pdfBytes: sample, pdfHash: 'sample', workDir: join(work, 'font'), pages: [2], targetHeight: 1080,
+    });
+    expect(await darkPixels(out.get(2)!)).toBeGreaterThan(9000);
   });
 
   it('renders only the requested pages', async () => {

@@ -8,15 +8,14 @@
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join, sep } from 'node:path';
 import { createCanvas } from '@napi-rs/canvas';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { hashOf } from '../lib/cache.js';
 import { PdfError } from './pdfinfo.js';
 
 /** Bump when the rasterising code changes in a way that alters the pixels. */
-export const RASTER_VERSION = 1;
+export const RASTER_VERSION = 2;
 
 /** Longest allowed side in pixels; keeps very long/odd pages from exhausting memory. */
 const MAX_SIDE = 4096;
@@ -32,10 +31,15 @@ export interface ExtractOptions {
   force?: boolean;
 }
 
-/** pdfjs needs these folders (with a trailing slash) to draw text PDFs in Node. */
-const assetUrl = (folder: string): string => {
+/**
+ * pdfjs needs these folders to draw text PDFs in Node. Must be a plain filesystem path with a
+ * trailing forward slash (pdfjs validates "/"; Windows fs accepts it), NOT a file:// URL: pdfjs's Node loader passes it straight to fs.readFile,
+ * so a URL fails silently and text falls back to an arbitrary system font (the old
+ * "C h o o s e" spacing bug).
+ */
+const assetDir = (folder: string): string => {
   const pkgJson = createRequire(import.meta.url).resolve('pdfjs-dist/package.json');
-  return `${pathToFileURL(join(dirname(pkgJson), folder)).href}/`;
+  return `${join(dirname(pkgJson), folder).replaceAll(sep, '/')}/`;
 };
 
 export const pagesDir = (workDir: string, pdfHash: string, targetHeight = 2160): string =>
@@ -51,11 +55,11 @@ export const extractPages = async (opts: ExtractOptions): Promise<Map<number, st
   const task = getDocument({
     data: new Uint8Array(pdfBytes),
     verbosity: 0,
-    standardFontDataUrl: assetUrl('standard_fonts'),
-    cMapUrl: assetUrl('cmaps'),
+    standardFontDataUrl: assetDir('standard_fonts'),
+    cMapUrl: assetDir('cmaps'),
     cMapPacked: true,
-    iccUrl: assetUrl('iccs'),
-    wasmUrl: assetUrl('wasm'),
+    iccUrl: assetDir('iccs'),
+    wasmUrl: assetDir('wasm'),
   });
   try {
     const doc = await task.promise;
