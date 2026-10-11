@@ -1,5 +1,5 @@
 # 01 — pdf2video CLI
-Status: approved · Size: large
+Status: in progress · Size: large
 
 ## Goal
 A Node.js/npm CLI that turns a PDF into a short, narrated, summarized MP4.
@@ -144,8 +144,8 @@ Commands also split for the review flow: `pdf2video plan <pdf>` (stages 1-2, wri
 ## Tasks
 Run one task per coder run. `owns:` files must not overlap between parallel runs.
 
-- [ ] **T1 Scaffold + Gemini smoke test** — owns: `package.json`, `tsconfig.json`, `tsup.config.ts`, `src/lib/gemini.ts`, `src/config.ts`, `scripts/smoke.ts` — done when: `npx tsx scripts/smoke.ts` gets a JSON reply for a tiny PDF and a playable WAV from TTS; current model ids, the PCM format, the TTS quota seen in AI Studio, and whether `ffmpeg -filters` lists `subtitles` are written into this plan's Log
-- [ ] **T2 Schema + cache** — owns: `src/schema.ts`, `src/lib/cache.ts`, tests — done when: zod rejects bad scenes (page 0, focus outside 0-1, empty narration); cache hit/miss unit tests pass, including: edited narration → new audio key; inserted scene → other scenes keep their keys; edited `scenes.json` is not overwritten; runtime page clamp / focus drop
+- [x] **T1 Scaffold + Gemini smoke test** — owns: `package.json`, `tsconfig.json`, `tsup.config.ts`, `src/lib/gemini.ts`, `src/config.ts`, `scripts/smoke.ts` — done when: `npx tsx scripts/smoke.ts` gets a JSON reply for a tiny PDF and a playable WAV from TTS; current model ids, the PCM format, the TTS quota seen in AI Studio, and whether `ffmpeg -filters` lists `subtitles` are written into this plan's Log
+- [x] **T2 Schema + cache** — owns: `src/schema.ts`, `src/lib/cache.ts`, tests — done when: zod rejects bad scenes (page 0, focus outside 0-1, empty narration); cache hit/miss unit tests pass, including: edited narration → new audio key; inserted scene → other scenes keep their keys; edited `scenes.json` is not overwritten; runtime page clamp / focus drop
 - [ ] **T3 Extract pages** — owns: `src/pipeline/extract.ts` — done when: a 10-page PDF gives 10 PNGs at a sane size; encrypted PDF gives a clean error. Uses D13 unless a concrete problem is found (log it)
 - [ ] **T4 Summarize** — owns: `src/pipeline/summarize.ts`, prompt file — done when: sample PDF returns valid Scenes within `--length` budget (words ≈ seconds × 2.5); invalid output triggers one repair retry; scene count capped (~length/11); page = file position; >14 MB uses Files API
 - [ ] **T5 TTS** — owns: `src/pipeline/tts.ts` — done when: each scene gets a WAV with correct duration; 429 per-minute retried, daily quota stops cleanly; empty/short audio retried; cached by hash
@@ -175,3 +175,6 @@ Order: T1 -> (T2, T3 in parallel) -> T4, T5, T6 (parallel, different files) -> T
 - 2026-10-11 — plan drafted from the brainstorm (user: summarized video, Google AI, PDF pages on screen, Node/npm CLI). D6 and D7 assumed, not yet confirmed.
 - 2026-10-11 — user answered open questions (D7, D9-D11); plan approved; git initialised. `GOOGLE_AI` confirmed at Windows user level (not in already-running shells).
 - 2026-10-11 — devil review merged: B1 → cache keys table + D15; B2 → silent clips + single audio track (D14); D13 rasteriser default; validation, Gemini limits, review-pause rules added; T2–T7 done-when tightened.
+- 2026-10-11 — T1 done: models `gemini-3.8-flash` (summary) + `gemini-3.8-flash-tts`, voice Kore (from ai.google.dev/gemini-api/docs/models). TTS returns a **complete WAV** (24 kHz mono s16), unwrapped by `src/lib/wav.ts`. D12 confirmed (AI Studio key). ffmpeg-static 6.1.1 has `subtitles` + `ass`. Daily 429 → QuotaExhaustedError. TTS quota not yet read from AI Studio.
+- 2026-10-11 — T2 done: zod schemas + `z.toJSONSchema` for Gemini; hashed cache keys; scenes.json without readable meta counts as user-edited. 17 tests pass.
+- 2026-10-11 — user asked: finish AI integration as MVP (T4 summarize + T5 TTS + thin `plan` CLI), then push repo public to GitHub (gh to be installed by user; commits to use GitHub noreply email).
