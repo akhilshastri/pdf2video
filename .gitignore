@@ -1,0 +1,25 @@
+# Deny by default: ignore everything at the top level, then allow what is versioned.
+/*
+!/.gitignore
+!/CLAUDE.md
+!/README.md
+!/plan/
+!/src/
+!/scripts/
+!/test/
+!/prompts/
+!/package.json
+!/package-lock.json
+!/tsconfig.json
+!/tsup.config.ts
+!/vitest.config.ts
+
+# Never versioned, even inside allowed folders.
+.env*
+*.credentials.json
+*.pem
+*.key
+node_modules/
+.pdf2video/
+*.mp4
+*.wav
