@@ -144,3 +144,47 @@ describe('cached', () => {
     }
   });
 });
+
+describe('produceAtomic rename retry', () => {
+  const eperm = () => Object.assign(new Error('EPERM'), { code: 'EPERM' });
+  const setup = async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'p2v-rename-'));
+    return { dir, path: join(dir, 'out.mp4') };
+  };
+
+  it('retries a transient EPERM and then succeeds', async () => {
+    const { dir, path } = await setup();
+    let fails = 3;
+    const flaky = (async (from: string, to: string) => {
+      if (fails-- > 0) throw eperm();
+      return (await import('node:fs/promises')).rename(from, to);
+    }) as typeof import('node:fs/promises').rename;
+    await produceAtomic(path, (p) => writeFile(p, 'x'), flaky, 500);
+    expect(await readFile(path, 'utf8')).toBe('x');
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('keeps the temp file and explains when the rename never works', async () => {
+    const { dir, path } = await setup();
+    const never = (async () => {
+      throw eperm();
+    }) as unknown as typeof import('node:fs/promises').rename;
+    await expect(produceAtomic(path, (p) => writeFile(p, 'x'), never, 50)).rejects.toThrow(
+      /Could not replace .*out\.mp4 \(is it open in another program\?\)\. The finished file was kept at .*\.tmp-/,
+    );
+    expect((await readdir(dir)).filter((f) => f.includes('.tmp-'))).toHaveLength(1);
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe('scenes.json restore', () => {
+  it('a restored previous generated file is user-edited, not stale', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'p2v-restore-'));
+    await writeGeneratedScenes(dir, scenes, 'k1');
+    const first = await readFile(join(dir, 'scenes.json'), 'utf8');
+    await writeGeneratedScenes(dir, { ...scenes, title: 'T2' }, 'k2');
+    await writeFile(join(dir, 'scenes.json'), first);
+    expect(await readScenesState(dir, 'k2')).toBe('user-edited');
+    await rm(dir, { recursive: true, force: true });
+  });
+});

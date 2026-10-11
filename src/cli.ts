@@ -160,9 +160,20 @@ export const askOrCancel = (rl: ReturnType<typeof createInterface>, prompt: stri
   new Promise<void>((resolveAsk, reject) => {
     const eof = new CancelledError('Review cancelled (input closed before Enter).', 1);
     const sigint = new CancelledError('Review cancelled (Ctrl+C).', 130);
-    rl.once('close', () => reject(eof));
-    rl.once('SIGINT', () => reject(sigint));
-    rl.question(prompt).then(() => resolveAsk(), () => reject(eof));
+    // Named handlers so they can be removed: reviewPause calls this in a loop on one rl.
+    const cleanup = () => {
+      rl.off('close', onClose);
+      rl.off('SIGINT', onSigint);
+    };
+    const fail = (e: CancelledError) => (cleanup(), reject(e));
+    const onClose = () => fail(eof);
+    const onSigint = () => fail(sigint);
+    rl.once('close', onClose);
+    rl.once('SIGINT', onSigint);
+    rl.question(prompt).then(
+      () => (cleanup(), resolveAsk()),
+      () => fail(eof),
+    );
   });
 
 /** Waits for Enter; repeats while scenes.json is invalid. */

@@ -99,6 +99,19 @@ describe('cli early validation', () => {
     rl.close();
   });
 
+  it('review pause: repeated questions do not leak listeners', async () => {
+    const input = new PassThrough();
+    const rl = createInterface({ input, output: new PassThrough() });
+    for (let i = 0; i < 12; i++) {
+      const pending = askOrCancel(rl, 'go? ');
+      input.write('\n');
+      await pending;
+    }
+    expect(rl.listenerCount('close')).toBeLessThanOrEqual(1); // readline's own
+    expect(rl.listenerCount('SIGINT')).toBe(0);
+    rl.close();
+  });
+
   it('review pause: Enter resolves', async () => {
     const input = new PassThrough();
     const rl = createInterface({ input, output: new PassThrough() });
