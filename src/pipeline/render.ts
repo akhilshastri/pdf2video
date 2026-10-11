@@ -13,11 +13,11 @@
  * Dependents: src/cli.ts. Uses extract.ts (pages), subtitles.ts, tts.ts (timings), lib/cache.ts.
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
-import { rm, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
-import { cached, clipKey, hashOf } from '../lib/cache.js';
+import { cached, clipKey, fileHash, hashOf, produceAtomic } from '../lib/cache.js';
 import { mediaDuration, runFfmpeg } from '../lib/ffmpeg.js';
 import type { Focus, Scenes } from '../schema.js';
 import { extractPages } from './extract.js';
@@ -25,7 +25,7 @@ import { buildAss, buildSrt } from './subtitles.js';
 import type { SceneTiming } from './tts.js';
 
 /** Bump when clip pixels would change (stage look, motion, encoder settings). */
-export const RENDER_VERSION = 3;
+export const RENDER_VERSION = 4;
 
 export const FONT_FAMILY = 'Noto Sans';
 const MIN_ZOOM_WIDTH = 0.35; // crop never narrower than 35% of the stage
@@ -177,20 +177,20 @@ export const renderVideo = async (o: RenderOptions): Promise<RenderResult> => {
   log(`Rendering ${needed.length} page(s)`);
   const pages = await extractPages({ pdfBytes: o.pdfBytes, pdfHash: o.pdfHash, workDir: workAbs, pages: needed, force });
 
-  // Stages: one per page, cached by settings.
-  const stages = new Map<number, { path: string; rect: Rect }>();
+  // Stages: one per page. Keyed by the page PNG's content, so a new raster (font fix, RASTER_VERSION
+  // bump) never reuses an old stage; clips below include the stage key for the same reason.
+  const stages = new Map<number, { path: string; rect: Rect; key: string }>();
   for (const n of needed) {
     const png = pages.get(n)!;
-    const path = join(workAbs, 'stages', `${hashOf('stage', o.pdfHash, n, sizeKey, RENDER_VERSION).slice(0, 16)}.png`);
-    mkdirSync(dirname(path), { recursive: true });
-    let rect: Rect;
-    if (!force && existsSync(path)) {
+    const key = hashOf('stage', await fileHash(png), sizeKey, RENDER_VERSION).slice(0, 16);
+    const path = join(workAbs, 'stages', `${key}.png`);
+    let rect: Rect | undefined;
+    const hit = await cached(path, async (p) => { rect = await composeStage(png, stageW, stageH, p); }, force);
+    if (hit) {
       const img = await loadImage(png);
       rect = fitRect(img.width, img.height, stageW, stageH);
-    } else {
-      rect = await composeStage(png, stageW, stageH, path);
     }
-    stages.set(n, { path, rect });
+    stages.set(n, { path, rect: rect!, key });
   }
 
   // Clips: silent, one per scene, cached.
@@ -203,12 +203,11 @@ export const renderVideo = async (o: RenderOptions): Promise<RenderResult> => {
       audioKey: `frames:${frames[i]}:fps:${fps}`,
       page: scene.page,
       focus: scene.focus,
-      size: `${sizeKey}:${o.pdfHash}`,
+      size: `${sizeKey}:${stage.key}`,
       renderVersion: RENDER_VERSION,
     });
     const clip = join(workAbs, 'clips', `${key}.mp4`);
     const crop = targetCrop(stageW, stageH, stage.rect, scene.focus);
-    if (force) await rm(clip, { force: true });
     const hit = await cached(clip, async (p) => {
       log(`Scene ${i + 1}/${scenes.scenes.length}: rendering`);
       await runFfmpeg(
@@ -219,7 +218,7 @@ export const renderVideo = async (o: RenderOptions): Promise<RenderResult> => {
         ],
         { stdin: clipFrames(stage.path, crop, frames[i]!, stageW, stageH, size.width, size.height) },
       );
-    });
+    }, force);
     if (hit) log(`Scene ${i + 1}/${scenes.scenes.length}: cached`);
     clipPaths.push(clip);
   }
@@ -229,7 +228,9 @@ export const renderVideo = async (o: RenderOptions): Promise<RenderResult> => {
     join(workAbs, 'concat.txt'),
     clipPaths.map((p) => `file 'clips/${p.split(/[\\/]/).pop()}'`).join('\n') + '\n',
   );
-  await runFfmpeg(['-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', 'silent.mp4'], { cwd: workAbs });
+  await produceAtomic(join(workAbs, 'silent.mp4'), (tmp) =>
+    runFfmpeg(['-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', tmp], { cwd: workAbs }).then(() => {}),
+  );
 
   // Subtitles + fonts (fontsdir must be relative too).
   const fontsDir = join(workAbs, 'fonts');
@@ -249,18 +250,20 @@ export const renderVideo = async (o: RenderOptions): Promise<RenderResult> => {
     '-map', '0:v', '-map', '1:a',
     '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-shortest',
   ];
-  let subtitles: RenderResult['subtitles'] = 'burned';
+  let subtitles = 'burned' as RenderResult['subtitles']; // cast: assigned inside the closure below
   log('Muxing audio and burning subtitles');
-  try {
-    await runFfmpeg(
-      [...common, '-vf', 'subtitles=subs.ass:fontsdir=fonts', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', out],
-      { cwd: workAbs },
-    );
-  } catch (e) {
-    log(`Subtitle burn-in failed, writing a soft .srt instead (${(e as Error).message.split('\n')[0]})`);
-    subtitles = 'soft';
-    await runFfmpeg([...common, '-c:v', 'copy', out], { cwd: workAbs });
-    await writeFile(out.replace(/\.[^.\\/]+$/, '') + '.srt', buildSrt(subOpts));
-  }
+  await produceAtomic(out, async (tmp) => {
+    try {
+      await runFfmpeg(
+        [...common, '-vf', 'subtitles=subs.ass:fontsdir=fonts', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', tmp],
+        { cwd: workAbs },
+      );
+    } catch (e) {
+      log(`Subtitle burn-in failed, writing a soft .srt instead (${(e as Error).message.split('\n')[0]})`);
+      subtitles = 'soft';
+      await runFfmpeg([...common, '-c:v', 'copy', tmp], { cwd: workAbs });
+    }
+  });
+  if (subtitles === 'soft') await writeFile(out.replace(/\.[^.\\/]+$/, '') + '.srt', buildSrt(subOpts));
   return { outPath: out, durationSeconds: await mediaDuration(out), subtitles };
 };

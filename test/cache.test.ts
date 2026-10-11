@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,6 +7,7 @@ import {
   cached,
   clipKey,
   hashOf,
+  produceAtomic,
   readScenesState,
   scenesKey,
   workDirFor,
@@ -75,7 +76,61 @@ describe('scenes.json protection', () => {
   });
 });
 
+describe('scenes.json interrupted rewrite', () => {
+  it('meta written but scenes.json not yet replaced reads as stale, not user-edited', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'p2v-'));
+    try {
+      await writeGeneratedScenes(dir, scenes, 'k1');
+      const old = JSON.parse(await readFile(join(dir, 'scenes.meta.json'), 'utf8'));
+      // Simulate the crash window: new meta in place, old scenes.json still there.
+      await writeFile(
+        join(dir, 'scenes.meta.json'),
+        JSON.stringify({ key: 'k2', fileHash: hashOf('new text'), prevFileHash: old.fileHash }),
+      );
+      expect(await readScenesState(dir, 'k2')).toBe('stale');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('cached', () => {
+  it('a failed produce leaves no final or temp file and is not cached', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'p2v-'));
+    try {
+      const path = join(dir, 'clip.mp4');
+      const seen: string[] = [];
+      await expect(
+        cached(path, async (p) => {
+          seen.push(p);
+          await writeFile(p, 'half');
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+      expect(seen[0]).not.toBe(path);
+      expect(seen[0]).toMatch(/\.tmp-.*\.mp4$/);
+      expect(await readdir(dir)).toEqual([]);
+      expect(await cached(path, async (p) => writeFile(p, 'ok'))).toBe(false);
+      expect(await readFile(path, 'utf8')).toBe('ok');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  it('force re-produces, and a failed forced produce keeps the old file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'p2v-'));
+    try {
+      const path = join(dir, 'a.txt');
+      await writeFile(path, 'old');
+      await expect(cached(path, async () => { throw new Error('x'); }, true)).rejects.toThrow('x');
+      expect(await readFile(path, 'utf8')).toBe('old');
+      expect(await cached(path, async (p) => writeFile(p, 'new'), true)).toBe(false);
+      expect(await readFile(path, 'utf8')).toBe('new');
+      await produceAtomic(path, async (p) => writeFile(p, 'again'));
+      expect(await readFile(path, 'utf8')).toBe('again');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it('produces once, then hits', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'p2v-'));
     try {

@@ -6,7 +6,7 @@
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { audioKey, cached } from '../lib/cache.js';
+import { audioKey, cached, writeFileAtomic } from '../lib/cache.js';
 import { synthesizeSpeech } from '../lib/gemini.js';
 import { parseWav, pcmDurationSeconds, pcmToWav, type PcmFormat } from '../lib/wav.js';
 import type { Scene } from '../schema.js';
@@ -53,7 +53,7 @@ const wavDuration = async (path: string): Promise<number> => {
   return pcmDurationSeconds(wav.pcm, wav);
 };
 
-/** Asks for speech until the reply passes the length check; QuotaExhaustedError passes through untouched. */
+/** Asks for speech (3 requests max in total, empty and too-short replies share the budget) until the reply passes the length check; QuotaExhaustedError passes through untouched. */
 const speakWithChecks = async (scene: Scene, o: SynthesizeOptions): Promise<Buffer> => {
   const minSeconds = wordCount(scene.narration) * MIN_SECONDS_PER_WORD;
   for (let attempt = 1; ; attempt++) {
@@ -76,10 +76,7 @@ export const synthesizeScenes = async (o: SynthesizeOptions): Promise<SceneAudio
   for (const [i, scene] of o.scenes.entries()) {
     const key = keyFor(scene, o);
     const wavPath = join(dir, `${key}.wav`);
-    const produce = async (p: string) => writeFile(p, await speakWithChecks(scene, o));
-    let hit = false;
-    if (o.force) await produce(wavPath);
-    else hit = await cached(wavPath, produce);
+    const hit = await cached(wavPath, async (p) => writeFile(p, await speakWithChecks(scene, o)), o.force);
     out.push({ sceneId: scene.id, key, wavPath, durationSeconds: await wavDuration(wavPath) });
     o.onProgress?.({ sceneId: scene.id, index: i + 1, total: o.scenes.length, cached: hit });
   }
@@ -128,6 +125,6 @@ export const joinNarration = async (
     chunks.push(wav.pcm, tail);
   }
   await mkdir(dirname(outPath), { recursive: true });
-  await writeFile(outPath, pcmToWav(Buffer.concat(chunks), format!));
+  await writeFileAtomic(outPath, pcmToWav(Buffer.concat(chunks), format!));
   return { path: outPath, totalSeconds: cursor, timings };
 };

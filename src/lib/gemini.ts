@@ -31,14 +31,6 @@ export class QuotaExhaustedError extends Error {
   }
 }
 
-/** Thrown inside a retried call when TTS returns no audio; carries a 5xx status so withRetry retries it. */
-class NoAudioError extends Error {
-  readonly status = 503;
-  constructor() {
-    super('Gemini returned no audio.');
-  }
-}
-
 export interface PdfPart {
   bytes: Uint8Array;
 }
@@ -141,7 +133,7 @@ const rateFromMime = (mime: string | undefined): number => {
   return m ? Number(m[1]) : 24000;
 };
 
-/** Speaks `text` with a prebuilt voice. Returns raw 16-bit mono PCM plus its format. */
+/** Speaks `text` with a prebuilt voice. Returns raw 16-bit mono PCM plus its format (empty pcm = no audio came back). */
 export const synthesizeSpeech = async (
   text: string,
   voice: string,
@@ -158,9 +150,11 @@ export const synthesizeSpeech = async (
       },
     });
     const found = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)?.inlineData;
-    if (!found?.data) throw new NoAudioError(); // TTS occasionally returns text/empty; retry
-    return { data: found.data, mimeType: found.mimeType };
+    return found?.data ? { data: found.data, mimeType: found.mimeType } : undefined;
   });
+  // TTS occasionally returns text/empty. Not retried here: the caller (tts.ts speakWithChecks)
+  // owns the retry budget for empty/short audio, so a bad scene costs 3 requests, not 15.
+  if (!inline) return { pcm: Buffer.alloc(0), sampleRate: 24000, channels: 1, bitsPerSample: 16 };
   if (process.env.PDF2VIDEO_DEBUG) console.error('TTS mimeType:', inline.mimeType);
   const raw = Buffer.from(inline.data, 'base64');
   // Observed: the 3.8 TTS model returns a complete WAV file; older models returned bare L16 PCM.

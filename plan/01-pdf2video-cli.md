@@ -26,6 +26,7 @@ PDF's own pages (slow zoom/crop onto the part being discussed) with burned-in su
 | D14 | Silent scene clips + one joined audio track muxed at the end (devil B2) | leader, after devil |
 | D15 | Cache files named by a hash of their inputs; a user-edited `scenes.json` is never overwritten (devil B1) | leader, after devil |
 | D16 | Work dir is always kept (it is the cache); `--keep` dropped from the CLI surface | leader |
+| D17 | `--scenes <file>` dropped from v1: the review pause and the `render` command cover editing a script | leader, after review |
 | D12 | `GOOGLE_AI` assumed to be an AI Studio (Gemini Developer API) key; T1's smoke test confirms | leader |
 
 ## Design
@@ -102,7 +103,6 @@ pdf2video <input.pdf> [options]
   --length <seconds>      target video length     (default: 90)
   --size <WxH>            output size             (default: 1920x1080)
   --no-review             do not pause on scenes.json
-  --scenes <file>         skip summarize, use this scenes.json
   --force                 ignore cache
 ```
 Review pause (devil should-fix 8): skipped automatically when stdin is not a TTY; prints the absolute path of `scenes.json`; after Enter it re-validates, and on bad JSON shows the error and pauses again. `--no-review` arrives from commander as `review: false`.
@@ -186,3 +186,5 @@ Order: T1 -> (T2, T3 in parallel) -> T4, T5, T6 (parallel, different files) -> T
 - 2026-10-11 — T7 done: tried zoompan on a 2x stage — fails because it snaps to whole pixels (every ~3rd frame identical); now each frame is drawn with @napi-rs/canvas at fractional offsets and piped to ffmpeg as raw RGBA. 1080p, 3 scenes / 40.9 s: 35 s first render, 8 s cached; duration matches narration within 0.01 s. Font: Noto Sans (OFL) in assets/fonts. Leader frame check found 2 bugs from earlier tasks: standard PDF fonts render in a wrong narrow system font (T3), subtitle box low-contrast on white with a darker overlap band (T6).
 - 2026-10-11 — T8 done: `render` command; default command now plan → review → voice → render; `-o`, `--size` (validated before API calls); D16 (no `--keep`). Subtitle box made ~92% opaque (`&H14`) — no overlap band, readable on white. Mocked end-to-end test renders a 320x180 MP4. 71 tests.
 - 2026-10-11 — Font bug fixed: tried useSystemFonts/disableFontFace — no effect; real cause: pdfjs's Node loader passes `file://` URL strings to fs.readFile, so standard fonts (and cMaps/ICC/wasm) never loaded. Now plain paths with a trailing `/`; RASTER_VERSION=2; dark-pixel regression test. Leader confirmed page 2 visually. Open: embedded-font PDF not tested; real end-to-end TTS run waits for quota reset.
+- 2026-10-11 — First full code review: 2 blockers (half-written clips/WAVs/PNGs reused as cache; stage/clip keys ignore page raster so the font fix never reached old work dirs), should-fix: --size checked after an API call, subtitles matched by non-unique scene id, TTS no-audio retried up to 15×, `--scenes` missing (→ D17). Fixes in progress.
+- 2026-10-11 — Review fixes landed (0015, 0016); re-review: all findings fixed. Open: retry rename on Windows EPERM/EBUSY (file open in a player / antivirus), askOrCancel listener leak, prevFileHash restore edge case.

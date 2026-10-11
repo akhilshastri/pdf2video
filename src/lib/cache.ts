@@ -4,10 +4,10 @@
  * Also guards scenes.json: a file the user edited is never overwritten.
  * Dependents: src/pipeline/*.ts, src/cli.ts.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, extname, join } from 'node:path';
 import type { Focus, Scenes } from '../schema.js';
 
 /** JSON with object keys sorted, so key order never changes a hash. */
@@ -54,12 +54,51 @@ const META_FILE = 'scenes.meta.json';
 
 export type ScenesState = 'missing' | 'fresh' | 'stale' | 'user-edited';
 
-/** Writes scenes.json plus scenes.meta.json {key, fileHash} used to detect later edits. */
+/** sha256 hex of a file's bytes. */
+export const fileHash = async (path: string): Promise<string> =>
+  createHash('sha256').update(await readFile(path)).digest('hex');
+
+/** `<name>.tmp-<pid>-<rand><ext>`: keeps the real extension so ffmpeg still picks the right muxer. */
+const tempPathFor = (path: string): string => {
+  const ext = extname(path);
+  return `${path.slice(0, path.length - ext.length)}.tmp-${process.pid}-${randomBytes(4).toString('hex')}${ext}`;
+};
+
+/**
+ * Runs produce(tempPath), then renames onto `path`. A crash or error mid-way never leaves a
+ * half-written file at `path` (which `cached` would later trust); the temp is deleted on error.
+ */
+export const produceAtomic = async (path: string, produce: (path: string) => Promise<void>): Promise<void> => {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = tempPathFor(path);
+  try {
+    await produce(tmp);
+    await rename(tmp, path);
+  } catch (e) {
+    await rm(tmp, { force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
+    throw e;
+  }
+};
+
+export const writeFileAtomic = (path: string, data: string | Uint8Array): Promise<void> =>
+  produceAtomic(path, (p) => writeFile(p, data));
+
+/**
+ * Writes scenes.json plus scenes.meta.json {key, fileHash, prevFileHash} used to detect later edits.
+ * Meta goes first and remembers the previous file's hash: a crash before scenes.json lands leaves
+ * the old generated file, which still matches prevFileHash and so reads as stale, not user-edited.
+ */
 export const writeGeneratedScenes = async (dir: string, scenes: Scenes, key: string): Promise<void> => {
   await mkdir(dir, { recursive: true });
   const text = `${JSON.stringify(scenes, null, 2)}\n`;
-  await writeFile(join(dir, SCENES_FILE), text);
-  await writeFile(join(dir, META_FILE), JSON.stringify({ key, fileHash: hashOf(text) }, null, 2));
+  let prevFileHash: string | undefined;
+  try {
+    prevFileHash = JSON.parse(await readFile(join(dir, META_FILE), 'utf8')).fileHash;
+  } catch {
+    // no earlier meta
+  }
+  await writeFileAtomic(join(dir, META_FILE), JSON.stringify({ key, fileHash: hashOf(text), prevFileHash }, null, 2));
+  await writeFileAtomic(join(dir, SCENES_FILE), text);
 };
 
 /**
@@ -70,20 +109,28 @@ export const writeGeneratedScenes = async (dir: string, scenes: Scenes, key: str
 export const readScenesState = async (dir: string, expectedKey: string): Promise<ScenesState> => {
   const file = join(dir, SCENES_FILE);
   if (!existsSync(file)) return 'missing';
-  let meta: { key?: string; fileHash?: string };
+  let meta: { key?: string; fileHash?: string; prevFileHash?: string };
   try {
     meta = JSON.parse(await readFile(join(dir, META_FILE), 'utf8'));
   } catch {
     return 'user-edited';
   }
-  if (hashOf(await readFile(file, 'utf8')) !== meta.fileHash) return 'user-edited';
+  const hash = hashOf(await readFile(file, 'utf8'));
+  if (hash !== meta.fileHash && hash === meta.prevFileHash) return 'stale'; // interrupted rewrite
+  if (hash !== meta.fileHash) return 'user-edited';
   return meta.key === expectedKey ? 'fresh' : 'stale';
 };
 
-/** Runs produce(path) only when path doesn't exist yet. Returns true on a cache hit. */
-export const cached = async (path: string, produce: (path: string) => Promise<void>): Promise<boolean> => {
-  if (existsSync(path)) return true;
-  await mkdir(dirname(path), { recursive: true });
-  await produce(path);
+/**
+ * Runs produce only when path doesn't exist yet (or `force`). produce receives a temp path
+ * to write to; it is renamed to `path` only on success. Returns true on a cache hit.
+ */
+export const cached = async (
+  path: string,
+  produce: (path: string) => Promise<void>,
+  force = false,
+): Promise<boolean> => {
+  if (!force && existsSync(path)) return true;
+  await produceAtomic(path, produce);
   return false;
 };

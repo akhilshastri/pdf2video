@@ -24,11 +24,20 @@ interface Result {
   stderr: string;
 }
 
-/** Writes chunks to ffmpeg's stdin with backpressure, then closes it. EPIPE (ffmpeg died) is left to the exit code. */
-const feed = async (stdin: Writable, chunks: AsyncIterable<Uint8Array>): Promise<void> => {
+/**
+ * Writes chunks to ffmpeg's stdin with backpressure, then closes it. EPIPE (ffmpeg died) is left
+ * to the exit code; `isDone` stops frame generation once ffmpeg has exited.
+ */
+const feed = async (stdin: Writable, chunks: AsyncIterable<Uint8Array>, isDone: () => boolean): Promise<void> => {
   stdin.on('error', () => {});
   for await (const chunk of chunks) {
-    if (!stdin.write(chunk)) await once(stdin, 'drain').catch(() => {});
+    if (isDone()) break; // leaving the loop also closes the generator
+    if (stdin.write(chunk)) continue;
+    // Wake on 'close' too: if ffmpeg died, 'drain' never comes. The signal removes the loser's listener.
+    const ac = new AbortController();
+    await Promise.race([once(stdin, 'drain', { signal: ac.signal }), once(stdin, 'close', { signal: ac.signal })])
+      .catch(() => {})
+      .finally(() => ac.abort());
   }
   stdin.end();
 };
@@ -36,14 +45,25 @@ const feed = async (stdin: Writable, chunks: AsyncIterable<Uint8Array>): Promise
 const run = (args: string[], cwd?: string, frames?: AsyncIterable<Uint8Array>): Promise<Result> =>
   new Promise((resolve, reject) => {
     const child = spawn(binary(), args, { cwd, windowsHide: true, stdio: [frames ? 'pipe' : 'ignore', 'ignore', 'pipe'] });
-    if (frames) void feed(child.stdin!, frames).catch(reject);
+    let done = false;
+    if (frames) {
+      feed(child.stdin!, frames, () => done).catch((e) => {
+        // Frame generation failed: kill ffmpeg so it can't finalize a short file as if it were complete.
+        done = true;
+        child.kill();
+        reject(e);
+      });
+    }
     let stderr = '';
     child.stderr!.on('data', (d: Buffer) => {
       // Keep only the tail; ffmpeg can be chatty and we only report the last lines.
       stderr = (stderr + d.toString()).slice(-16_000);
     });
     child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stderr }));
+    child.on('close', (code) => {
+      done = true;
+      resolve({ code, stderr });
+    });
   });
 
 /** Runs ffmpeg quietly with overwrite; `stdin` streams raw frames to `-i -`. Throws FfmpegError with the last ~20 stderr lines on failure. */

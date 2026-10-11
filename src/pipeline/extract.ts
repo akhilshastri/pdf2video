@@ -7,11 +7,11 @@
  */
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
 import { createCanvas } from '@napi-rs/canvas';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { hashOf } from '../lib/cache.js';
+import { hashOf, writeFileAtomic } from '../lib/cache.js';
 import { PdfError } from './pdfinfo.js';
 
 /** Bump when the rasterising code changes in a way that alters the pixels. */
@@ -72,7 +72,7 @@ export const extractPages = async (opts: ExtractOptions): Promise<Map<number, st
       const file = join(dir, `${String(n).padStart(3, '0')}.png`);
       out.set(n, file);
       if (!force && existsSync(file)) continue;
-      await writeFile(file, await renderPage(doc, n, targetHeight));
+      await writeFileAtomic(file, await renderPage(doc, n, targetHeight));
     }
     return out;
   } catch (e) {

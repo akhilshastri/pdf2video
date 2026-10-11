@@ -1,3 +1,4 @@
+import { readdirSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,6 +64,18 @@ describe('synthesizeScenes', () => {
     const [a] = await synthesizeScenes(opts([scene(7, 'one two three four five')]));
     expect(speak).toHaveBeenCalledTimes(3);
     expect(a?.durationSeconds).toBe(2);
+  });
+
+  it('empty audio shares the 3-request budget (no multiplied retries)', async () => {
+    speak.mockResolvedValue({ ...reply(0), pcm: Buffer.alloc(0) });
+    await expect(synthesizeScenes(opts([scene(4, 'one two three')]))).rejects.toThrow(/Scene 4/);
+    expect(speak).toHaveBeenCalledTimes(3);
+  });
+
+  it('a failed synthesis leaves no wav behind', async () => {
+    speak.mockRejectedValue(new Error('net'));
+    await expect(synthesizeScenes(opts([scene(5, 'one two')]))).rejects.toThrow('net');
+    expect(readdirSync(join(dir, 'audio'))).toEqual([]);
   });
 
   it('fails naming the scene after 3 short replies', async () => {
