@@ -25,6 +25,7 @@ PDF's own pages (slow zoom/crop onto the part being discussed) with burned-in su
 | D13 | PDF rasteriser default: `pdfjs-dist` + `@napi-rs/canvas` (prebuilt, permissive licences) over `mupdf` WASM (AGPL). T3 may overturn it only for a concrete reason, logged | leader, after devil |
 | D14 | Silent scene clips + one joined audio track muxed at the end (devil B2) | leader, after devil |
 | D15 | Cache files named by a hash of their inputs; a user-edited `scenes.json` is never overwritten (devil B1) | leader, after devil |
+| D16 | Work dir is always kept (it is the cache); `--keep` dropped from the CLI surface | leader |
 | D12 | `GOOGLE_AI` assumed to be an AI Studio (Gemini Developer API) key; T1's smoke test confirms | leader |
 
 ## Design
@@ -83,7 +84,7 @@ Work dir: `./.pdf2video/<pdf-hash>/` holding page PNGs, `scenes.json`, `audio/<h
 | `scenes.json` | PDF hash + summary model + length + lang + prompt version (stored in `scenes.meta.json`) | if the file's current hash differs from the generated hash, the user edited it: **never overwrite**; warn and keep it unless `--force` |
 | `audio/<h>.wav` | narration + voice + TTS model + lang | inserting/reordering scenes reuses audio correctly |
 | `clips/<h>.mp4` | audio hash + page + focus + size + `RENDER_VERSION` | silent video only (see B2) |
-`--force` ignores all of them. Orphaned hashed files are harmless; `--keep` off deletes the work dir at the end.
+`--force` ignores all of them. Orphaned hashed files are harmless; the work dir is kept (D16) — delete it by hand to reclaim space.
 
 ### Gemini facts checked against SDK docs (js-genai v2, Context7)
 - Package `@google/genai`. `new GoogleGenAI({ apiKey })`. Read `process.env.GOOGLE_AI` ourselves and pass it in, because the SDK's default variable is not `GOOGLE_AI`.
@@ -103,7 +104,6 @@ pdf2video <input.pdf> [options]
   --no-review             do not pause on scenes.json
   --scenes <file>         skip summarize, use this scenes.json
   --force                 ignore cache
-  --keep                  keep the work dir
 ```
 Review pause (devil should-fix 8): skipped automatically when stdin is not a TTY; prints the absolute path of `scenes.json`; after Enter it re-validates, and on bad JSON shows the error and pauses again. `--no-review` arrives from commander as `review: false`.
 
@@ -151,7 +151,7 @@ Run one task per coder run. `owns:` files must not overlap between parallel runs
 - [x] **T5 TTS** — owns: `src/pipeline/tts.ts` — done when: each scene gets a WAV with correct duration; 429 per-minute retried, daily quota stops cleanly; empty/short audio retried; cached by hash
 - [x] **T6 Subtitles** — owns: `src/pipeline/subtitles.ts`, tests — done when: one ASS for the whole video; cues cover each scene's duration with no gaps/overlaps; no line over ~42 chars; PlayRes = `--size`
 - [x] **T7 Render** — owns: `src/pipeline/render.ts` — done when: silent clip per scene with smooth zoom; concat + one audio track + burned subs gives one MP4; duration (via `ffmpeg -i`) ≈ sum of padded audio, A/V in sync at the last scene
-- [ ] **T8 CLI + review flow** — owns: `src/cli.ts` — done when: `plan`, `render`, and the default command with pause all work; error messages match Acceptance
+- [x] **T8 CLI + review flow** — owns: `src/cli.ts` — done when: `plan`, `render`, and the default command with pause all work; error messages match Acceptance
 - [ ] **T9 End-to-end + README** — owns: `README.md`, `test/e2e/*` — done when: all Acceptance items tick on Windows
 
 Order: T1 -> (T2, T3 in parallel) -> T4, T5, T6 (parallel, different files) -> T7 -> T8 -> T9.
@@ -184,3 +184,4 @@ Order: T1 -> (T2, T3 in parallel) -> T4, T5, T6 (parallel, different files) -> T
 - 2026-10-11 — T3 done: pdfjs-dist + @napi-rs/canvas (D13 holds). Pages render at 2160 px high (long side ≤ 4096), ~0.3 s/page, cached per settings hash. Encrypted-PDF error tested by mock only (no cheap encrypted fixture).
 - 2026-10-11 — T6 done: one ASS (BorderStyle 3 box, size h/22) + SRT fallback; ≤2 lines × 42 chars; cues contiguous within each scene's speech, none in the 0.4 s tails. `assets/` allowed in .gitignore for T7's font.
 - 2026-10-11 — T7 done: tried zoompan on a 2x stage — fails because it snaps to whole pixels (every ~3rd frame identical); now each frame is drawn with @napi-rs/canvas at fractional offsets and piped to ffmpeg as raw RGBA. 1080p, 3 scenes / 40.9 s: 35 s first render, 8 s cached; duration matches narration within 0.01 s. Font: Noto Sans (OFL) in assets/fonts. Leader frame check found 2 bugs from earlier tasks: standard PDF fonts render in a wrong narrow system font (T3), subtitle box low-contrast on white with a darker overlap band (T6).
+- 2026-10-11 — T8 done: `render` command; default command now plan → review → voice → render; `-o`, `--size` (validated before API calls); D16 (no `--keep`). Subtitle box made ~92% opaque (`&H14`) — no overlap band, readable on white. Mocked end-to-end test renders a 320x180 MP4. 71 tests.

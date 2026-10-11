@@ -1,11 +1,8 @@
 # pdf2video
 
-Turn a PDF into a short narrated summary. Gemini reads the PDF and writes a scene-by-scene
-script; Gemini TTS reads it aloud.
-
-> **Status: MVP.** The AI stages work (PDF → `scenes.json` → narration audio).
-> Rendering the video (PDF pages with zoom and subtitles → MP4) is next.
-> See [plan/01-pdf2video-cli.md](plan/01-pdf2video-cli.md).
+Turn a PDF into a short narrated summary video. Gemini reads the PDF and writes a scene-by-scene
+script; Gemini TTS reads it aloud; ffmpeg renders the PDF's own pages with a slow zoom and subtitles.
+See [plan/01-pdf2video-cli.md](plan/01-pdf2video-cli.md).
 
 ## Setup
 
@@ -20,16 +17,24 @@ npm install
 ## Use
 
 ```sh
-npx tsx src/cli.ts report.pdf              # plan, pause so you can edit scenes.json, then voice
+npx tsx src/cli.ts report.pdf              # plan, pause so you can edit scenes.json, voice, render -> report.mp4
 npx tsx src/cli.ts plan report.pdf         # only write scenes.json
 npx tsx src/cli.ts voice report.pdf        # only make narration.wav from scenes.json
+npx tsx src/cli.ts render report.pdf       # voice (cached) + render, from an existing scenes.json
 ```
 
-Useful options: `--length <seconds>` (default 90), `--lang <code>` (default en),
-`--voice <name>` (default Kore), `--no-review`, `--force`, `--yes`, `--work-dir <dir>`.
+Useful options: `-o, --out <file>` (default `<pdf name>.mp4` in the current folder),
+`--size <WxH>` (default 1920x1080, even numbers), `--length <seconds>` (default 90),
+`--lang <code>` (default en), `--voice <name>` (default Kore), `--no-review`, `--force`, `--yes`,
+`--work-dir <dir>`.
 
-Output goes to `.pdf2video/<pdf-hash>/`: `scenes.json`, `audio/*.wav`, `narration.wav`,
-`timings.json`. Re-runs reuse anything whose inputs did not change, so they cost no API calls.
+The video ends with the narration. Subtitles are burned in; if that fails, a `.srt` is written
+next to the video instead.
+
+The work dir `.pdf2video/<pdf-hash>/` holds `scenes.json`, `audio/*.wav`, `narration.wav`,
+`timings.json`, page images and scene clips. It is always kept: it is the cache, so re-runs reuse
+anything whose inputs did not change and cost no API calls. There is no `--keep` option; delete
+the folder to start clean.
 
 ## Privacy and limits
 

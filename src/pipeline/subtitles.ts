@@ -137,7 +137,9 @@ export const buildAss = (o: SubtitleOptions): string => {
   const font = o.fontName ?? 'Arial';
   const size = o.fontSize ?? Math.round(o.height / 22);
   const margin = Math.round(o.height / 18);
-  // BorderStyle 3 = opaque box; libass paints the box with OutlineColour.
+  // BorderStyle 3 = box; libass paints it with OutlineColour. Alpha &H14 (~92% opaque) keeps white
+  // text readable on a white PDF page, and is opaque enough that where the two lines' boxes
+  // overlap no darker band shows (at &H99 the overlap was visible and the box read light grey).
   const header = [
     '[Script Info]',
     'ScriptType: v4.00+',
@@ -148,7 +150,7 @@ export const buildAss = (o: SubtitleOptions): string => {
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Default,${font},${size},&H00FFFFFF,&H00FFFFFF,&H99000000,&H99000000,0,0,0,0,100,100,0,0,3,${Math.max(2, Math.round(size / 8))},0,2,${margin},${margin},${margin},1`,
+    `Style: Default,${font},${size},&H00FFFFFF,&H00FFFFFF,&H14000000,&H14000000,0,0,0,0,100,100,0,0,3,${Math.max(2, Math.round(size / 8))},0,2,${margin},${margin},${margin},1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',

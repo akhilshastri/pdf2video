@@ -106,6 +106,17 @@ describe('buildAss', () => {
     expect(ass).toContain('WrapStyle: 2');
     expect(ass).toContain('Style: Default,Inter,49,');
   });
+
+  it('uses a near-opaque box so white text reads on white pages and line boxes do not show an overlap band', () => {
+    const ass = buildAss({ scenes, timings, width: 1920, height: 1080 });
+    const style = ass.split(/\r?\n/).find((l) => l.startsWith('Style: Default'))!.split(',');
+    // Fields: ..., PrimaryColour(3), Secondary(4), Outline(5), Back(6), ..., BorderStyle(15)
+    expect(style[15]).toBe('3');
+    for (const colour of [style[5]!, style[6]!]) {
+      const alpha = parseInt(colour.slice(2, 4), 16); // &HAABBGGRR, 00 = opaque
+      expect(alpha).toBeLessThanOrEqual(0x20);
+    }
+  });
 });
 
 describe('buildSrt', () => {

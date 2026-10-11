@@ -1,17 +1,20 @@
 /**
- * Command-line entry: `pdf2video plan|voice <pdf>` and the default `pdf2video <pdf>`.
- * Owns option parsing, the first-run privacy notice, the review pause and top-level error
- * printing. The stages themselves live in src/pipeline/*. Video rendering is not wired yet.
+ * Command-line entry: `pdf2video plan|voice|render <pdf>` and the default `pdf2video <pdf>`
+ * (plan -> review pause -> voice -> render). Owns option parsing, the first-run privacy notice,
+ * the review pause and top-level error printing. The stages themselves live in src/pipeline/*.
+ * The work dir is always kept: it is the cache that makes re-runs free (no --keep option).
+ * Exports `program` so test/cli.test.ts can run it in-process; it only self-runs outside vitest.
  * Never prints the API key or PDF text; stack traces only with PDF2VIDEO_DEBUG=1.
  */
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
 import {
   DEFAULT_LANGUAGE,
   DEFAULT_LENGTH_SECONDS,
+  DEFAULT_SIZE,
   DEFAULT_VOICE,
   summaryModel,
   ttsModel as defaultTtsModel,
@@ -19,8 +22,9 @@ import {
 
 import { readScenesState, scenesKey, workDirFor, writeGeneratedScenes } from './lib/cache.js';
 import { readPdf } from './pipeline/pdfinfo.js';
+import { renderVideo } from './pipeline/render.js';
 import { PROMPT_VERSION, summarize } from './pipeline/summarize.js';
-import { joinNarration, synthesizeScenes } from './pipeline/tts.js';
+import { type JoinedNarration, joinNarration, synthesizeScenes } from './pipeline/tts.js';
 import { Scenes, checkScenesAgainstPdf } from './schema.js';
 
 interface Options {
@@ -33,6 +37,8 @@ interface Options {
   yes?: boolean;
   review: boolean;
   workDir: string;
+  out?: string;
+  size: string;
 }
 
 /** Error whose message is shown as-is (bad input, missing scenes.json). */
@@ -54,6 +60,17 @@ const lengthOf = (o: Options): number => {
   const n = Number(o.length);
   if (!Number.isFinite(n) || n <= 0) throw new UserError(`--length must be a positive number of seconds, got "${o.length}".`);
   return n;
+};
+
+/** "1280x720" -> {1280, 720}. Both numbers must be positive and even (yuv420p needs even sizes). */
+export const parseSize = (text: string): { width: number; height: number } => {
+  const m = /^(\d+)x(\d+)$/i.exec(text.trim());
+  const width = Number(m?.[1]);
+  const height = Number(m?.[2]);
+  if (!m || width <= 0 || height <= 0 || width % 2 || height % 2) {
+    throw new UserError(`--size must look like 1280x720 with even numbers, got "${text}".`);
+  }
+  return { width, height };
 };
 
 interface Context {
@@ -144,7 +161,7 @@ const reviewPause = async (ctx: Context): Promise<void> => {
   }
 };
 
-const voice = async (ctx: Context, o: Options): Promise<string> => {
+const voice = async (ctx: Context, o: Options): Promise<JoinedNarration> => {
   const { scenes, warnings } = await loadScenes(ctx);
   for (const w of warnings) console.warn(`Warning: ${w}`);
   await showNoticeOnce(o);
@@ -162,7 +179,29 @@ const voice = async (ctx: Context, o: Options): Promise<string> => {
   const joined = await joinNarration(audios, out);
   await writeFile(join(ctx.workDir, 'timings.json'), `${JSON.stringify(joined, null, 2)}\n`);
   console.log(`Narration: ${out} (${joined.totalSeconds.toFixed(1)} s)`);
-  return out;
+  return joined;
+};
+
+/** Voice (cached) + video. Needs scenes.json; writes the MP4 and prints its path, length and subtitle mode. */
+const render = async (ctx: Context, file: string, o: Options): Promise<void> => {
+  const size = parseSize(o.size); // fail before any API call
+  const narration = await voice(ctx, o);
+  const { scenes } = await loadScenes(ctx);
+  const outPath = resolve(o.out ?? `${basename(file).replace(/\.pdf$/i, '')}.mp4`);
+  const result = await renderVideo({
+    scenes,
+    timings: narration.timings,
+    narrationPath: narration.path,
+    pdfBytes: ctx.pdf.bytes,
+    pdfHash: ctx.pdf.hash,
+    workDir: ctx.workDir,
+    outPath,
+    size,
+    force: o.force,
+    onProgress: (msg) => console.log(msg),
+  });
+  const how = result.subtitles === 'burned' ? 'subtitles burned in' : 'soft subtitles (.srt next to the video)';
+  console.log(`Video: ${result.outPath} (${result.durationSeconds.toFixed(1)} s, ${how})`);
 };
 
 const withOptions = (cmd: Command): Command =>
@@ -174,18 +213,22 @@ const withOptions = (cmd: Command): Command =>
     .option('--tts-model <id>', 'Gemini model for speech')
     .option('--force', 'ignore cache and regenerate')
     .option('--yes', 'do not show the privacy notice')
-    .option('--work-dir <dir>', 'cache folder', '.pdf2video');
+    .option('--work-dir <dir>', 'cache folder (always kept; it is the cache)', '.pdf2video');
+
+const withVideoOptions = (cmd: Command): Command =>
+  withOptions(cmd)
+    .option('-o, --out <file>', 'output video (default: <pdf name>.mp4 in the current folder)')
+    .option('--size <WxH>', 'video size, even numbers', DEFAULT_SIZE);
 
 const program = new Command('pdf2video').description('Turn a PDF into a short narrated summary video');
 
-withOptions(program)
+withVideoOptions(program)
   .argument('<pdf>', 'input PDF')
   .option('--no-review', 'do not pause on scenes.json')
   .action(async (file: string, o: Options) => {
     const ctx = await plan(file, o);
     if (o.review && process.stdin.isTTY) await reviewPause(ctx);
-    const wav = await voice(ctx, o);
-    console.log(`Video rendering is not implemented yet; narration is at ${wav}`);
+    await render(ctx, file, o);
   });
 
 withOptions(program.command('plan').description('Summarise the PDF into scenes.json'))
@@ -201,6 +244,13 @@ withOptions(program.command('voice').description('Synthesise narration from scen
     await voice(await openPdf(file, o), o);
   });
 
+withVideoOptions(program.command('render').description('Voice (cached) and render the video from scenes.json'))
+  .argument('<pdf>', 'input PDF')
+  .action(async (file: string, _o: Options, cmd: Command) => {
+    const o = cmd.optsWithGlobals<Options>();
+    await render(await openPdf(file, o), file, o);
+  });
+
 /** Known errors print their message only; anything else is a bug, so say so. */
 const fail = (e: unknown): never => {
   if (process.env.PDF2VIDEO_DEBUG === '1') console.error(e);
@@ -209,4 +259,6 @@ const fail = (e: unknown): never => {
   process.exit(1);
 };
 
-program.parseAsync().catch(fail);
+export { program };
+
+if (!process.env.VITEST) program.parseAsync().catch(fail);
