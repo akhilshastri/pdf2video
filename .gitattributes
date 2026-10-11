@@ -1,0 +1,6 @@
+# Binary media: never convert line endings (PDF byte offsets must stay exact).
+*.pdf binary
+*.wav binary
+*.mp4 binary
+*.png binary
+*.ttf binary

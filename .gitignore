@@ -1,6 +1,7 @@
 # Deny by default: ignore everything at the top level, then allow what is versioned.
 /*
 !/.gitignore
+!/.gitattributes
 !/CLAUDE.md
 !/README.md
 !/plan/
