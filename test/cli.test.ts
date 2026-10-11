@@ -2,6 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 // Only affects this process (the spawned-tsx tests below are separate processes).
@@ -19,7 +21,7 @@ vi.mock('../src/lib/gemini.js', () => ({
 }));
 
 import { mediaDuration } from '../src/lib/ffmpeg.js';
-import { parseSize, program } from '../src/cli.js';
+import { askOrCancel, parseSize, program } from '../src/cli.js';
 
 // VITEST is removed: src/cli.ts does not self-run when it is set (see its header).
 const run = (args: string[], base: NodeJS.ProcessEnv = process.env) => {
@@ -60,6 +62,51 @@ describe('cli', () => {
 describe('parseSize', () => {
   it('accepts WxH with even numbers', () => expect(parseSize('1280x720')).toEqual({ width: 1280, height: 720 }));
   it.each(['1280', '1281x720', '0x0', 'axb'])('rejects %s', (bad) => expect(() => parseSize(bad)).toThrow(/--size/));
+});
+
+describe('cli early validation', () => {
+  it('bad --size fails before any Gemini call', async () => {
+    const { generateJson } = await import('../src/lib/gemini.js');
+    vi.mocked(generateJson).mockClear();
+    const dir = mkdtempSync(join(tmpdir(), 'pdf2video-size-'));
+    await expect(
+      program.parseAsync(['test/fixtures/sample.pdf', '--yes', '--no-review', '--size', '1281x720', '--work-dir', dir], { from: 'user' }),
+    ).rejects.toThrow(/--size/);
+    expect(generateJson).not.toHaveBeenCalled();
+  });
+
+  it('bad --size: exit 1, clean message, no stack', () => {
+    const r = run(['test/fixtures/sample.pdf', '--yes', '--size', '1281x720']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('--size');
+    expect(r.stderr).not.toMatch(/\n\s+at /);
+  });
+
+  it('review pause: EOF rejects with "Review cancelled" and exit code 1', async () => {
+    const input = new PassThrough();
+    const rl = createInterface({ input, output: new PassThrough() });
+    const pending = askOrCancel(rl, 'go? ');
+    input.end();
+    await expect(pending).rejects.toMatchObject({ message: expect.stringContaining('Review cancelled'), exitCode: 1 });
+  });
+
+  it('review pause: Ctrl+C rejects with exit code 130', async () => {
+    const input = new PassThrough();
+    const rl = createInterface({ input, output: new PassThrough() });
+    const pending = askOrCancel(rl, 'go? ');
+    rl.emit('SIGINT');
+    await expect(pending).rejects.toMatchObject({ message: expect.stringContaining('Review cancelled'), exitCode: 130 });
+    rl.close();
+  });
+
+  it('review pause: Enter resolves', async () => {
+    const input = new PassThrough();
+    const rl = createInterface({ input, output: new PassThrough() });
+    const pending = askOrCancel(rl, 'go? ');
+    input.write('\n');
+    await expect(pending).resolves.toBeUndefined();
+    rl.close();
+  });
 });
 
 describe('cli end to end (Gemini mocked)', () => {

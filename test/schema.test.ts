@@ -12,6 +12,18 @@ describe('Scenes schema', () => {
     expect(Scenes.safeParse(base({})).success).toBe(true);
     expect(Scenes.safeParse(base({ focus: { x: 0.1, y: 0.2, w: 0.8, h: 0.4 } })).success).toBe(true);
   });
+  it('rejects duplicate scene ids with a clear message', () => {
+    const r = Scenes.safeParse({
+      title: 'T',
+      language: 'en',
+      scenes: [
+        { id: 1, page: 1, narration: 'A.' },
+        { id: 1, page: 1, narration: 'B.' },
+      ],
+    });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error?.issues)).toContain('duplicate scene id 1');
+  });
   it('rejects page 0', () => expect(Scenes.safeParse(base({ page: 0 })).success).toBe(false));
   it('rejects focus outside 0-1', () => {
     expect(Scenes.safeParse(base({ focus: { x: -0.1, y: 0, w: 0.5, h: 0.5 } })).success).toBe(false);

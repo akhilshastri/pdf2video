@@ -126,4 +126,18 @@ describe('buildSrt', () => {
     expect(srt).toMatch(/\n2\n\d\d:\d\d:\d\d,\d{3} --> \d\d:\d\d:\d\d,\d{3}\n/);
     expect(srt).toContain('00:00:12,345');
   });
+
+  it('pairs timings with scenes by position, even when ids repeat', () => {
+    const dup = [
+      { id: 1, narration: 'First scene text here.' },
+      { id: 1, narration: 'Second scene text here.' },
+    ];
+    const tm = [
+      { sceneId: 1, start: 0, speechEnd: 5, end: 5.4 },
+      { sceneId: 1, start: 5.4, speechEnd: 10, end: 10.4 },
+    ];
+    const cues = buildCues(dup, tm);
+    expect(cues.at(-1)!.lines.join(' ')).toContain('Second');
+    expect(cues.at(-1)!.start).toBeGreaterThanOrEqual(5.4);
+  });
 });

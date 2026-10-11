@@ -106,12 +106,13 @@ export const buildSceneCues = (narration: string, start: number, end: number): C
   return cues;
 };
 
+/** Timings come from joinNarration in scene order, so pair by index (ids may repeat in a hand-edited file). */
 export const buildCues = (
   scenes: Pick<Scene, 'id' | 'narration'>[],
   timings: SceneTiming[],
 ): Cue[] =>
-  timings.flatMap((tm) => {
-    const scene = scenes.find((s) => s.id === tm.sceneId);
+  timings.flatMap((tm, i) => {
+    const scene = scenes[i];
     return scene ? buildSceneCues(scene.narration, tm.start, tm.speechEnd) : [];
   });
 

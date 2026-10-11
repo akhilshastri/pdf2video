@@ -30,7 +30,18 @@ export const Scene = z.object({
 export const Scenes = z.object({
   title: z.string().trim().min(1),
   language: z.string().min(2),
-  scenes: z.array(Scene).min(1),
+  scenes: z
+    .array(Scene)
+    .min(1)
+    .superRefine((list, ctx) => {
+      const seen = new Set<number>();
+      list.forEach((scene, i) => {
+        if (seen.has(scene.id)) {
+          ctx.addIssue({ code: 'custom', path: [i, 'id'], message: `duplicate scene id ${scene.id}; ids must be unique` });
+        }
+        seen.add(scene.id);
+      });
+    }),
 });
 
 export type Focus = z.infer<typeof Focus>;

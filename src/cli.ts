@@ -44,6 +44,13 @@ interface Options {
 /** Error whose message is shown as-is (bad input, missing scenes.json). */
 class UserError extends Error {}
 
+/** The user ended the review pause (Ctrl+C or closed stdin). Carries the process exit code. */
+class CancelledError extends UserError {
+  constructor(message: string, readonly exitCode: number) {
+    super(message);
+  }
+}
+
 const NOTICE = 'Note: the PDF is sent to Google Gemini for summarising and speech.';
 
 /** One line to stderr before the first API call, unless --yes or the marker file exists. */
@@ -62,8 +69,10 @@ const lengthOf = (o: Options): number => {
   return n;
 };
 
+type Size = { width: number; height: number };
+
 /** "1280x720" -> {1280, 720}. Both numbers must be positive and even (yuv420p needs even sizes). */
-export const parseSize = (text: string): { width: number; height: number } => {
+export const parseSize = (text: string): Size => {
   const m = /^(\d+)x(\d+)$/i.exec(text.trim());
   const width = Number(m?.[1]);
   const height = Number(m?.[2]);
@@ -142,12 +151,26 @@ const loadScenes = async (ctx: Context): Promise<{ scenes: Scenes; warnings: str
   return checkScenesAgainstPdf(parsed.data, ctx.pageCount);
 };
 
+/**
+ * Asks one question. Resolves with the answer, or rejects with CancelledError on Ctrl+C (exit 130)
+ * or when stdin closes (EOF, exit 1). Needed because a pending rl.question() never settles when
+ * the input ends; the process would just run out of work and exit 0 without rendering.
+ */
+export const askOrCancel = (rl: ReturnType<typeof createInterface>, prompt: string): Promise<void> =>
+  new Promise<void>((resolveAsk, reject) => {
+    const eof = new CancelledError('Review cancelled (input closed before Enter).', 1);
+    const sigint = new CancelledError('Review cancelled (Ctrl+C).', 130);
+    rl.once('close', () => reject(eof));
+    rl.once('SIGINT', () => reject(sigint));
+    rl.question(prompt).then(() => resolveAsk(), () => reject(eof));
+  });
+
 /** Waits for Enter; repeats while scenes.json is invalid. */
 const reviewPause = async (ctx: Context): Promise<void> => {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     for (;;) {
-      await rl.question(`Review or edit ${ctx.scenesPath}, then press Enter to continue... `);
+      await askOrCancel(rl, `Review or edit ${ctx.scenesPath}, then press Enter to continue... `);
       try {
         await loadScenes(ctx);
         return;
@@ -183,8 +206,7 @@ const voice = async (ctx: Context, o: Options): Promise<JoinedNarration> => {
 };
 
 /** Voice (cached) + video. Needs scenes.json; writes the MP4 and prints its path, length and subtitle mode. */
-const render = async (ctx: Context, file: string, o: Options): Promise<void> => {
-  const size = parseSize(o.size); // fail before any API call
+const render = async (ctx: Context, file: string, o: Options, size: Size): Promise<void> => {
   const narration = await voice(ctx, o);
   const { scenes } = await loadScenes(ctx);
   const outPath = resolve(o.out ?? `${basename(file).replace(/\.pdf$/i, '')}.mp4`);
@@ -226,9 +248,10 @@ withVideoOptions(program)
   .argument('<pdf>', 'input PDF')
   .option('--no-review', 'do not pause on scenes.json')
   .action(async (file: string, o: Options) => {
+    const size = parseSize(o.size); // before any PDF read or API call
     const ctx = await plan(file, o);
     if (o.review && process.stdin.isTTY) await reviewPause(ctx);
-    await render(ctx, file, o);
+    await render(ctx, file, o, size);
   });
 
 withOptions(program.command('plan').description('Summarise the PDF into scenes.json'))
@@ -248,11 +271,17 @@ withVideoOptions(program.command('render').description('Voice (cached) and rende
   .argument('<pdf>', 'input PDF')
   .action(async (file: string, _o: Options, cmd: Command) => {
     const o = cmd.optsWithGlobals<Options>();
-    await render(await openPdf(file, o), file, o);
+    const size = parseSize(o.size); // before any PDF read or API call
+    await render(await openPdf(file, o), file, o, size);
   });
 
 /** Known errors print their message only; anything else is a bug, so say so. */
 const fail = (e: unknown): never => {
+  if (e instanceof CancelledError) {
+    console.error(`
+${e.message}`);
+    process.exit(e.exitCode);
+  }
   if (process.env.PDF2VIDEO_DEBUG === '1') console.error(e);
   else if (e instanceof Error) console.error(`Error: ${e.message}`);
   else console.error('Error: unexpected failure (set PDF2VIDEO_DEBUG=1 for details).');
