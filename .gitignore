@@ -9,6 +9,7 @@
 !/scripts/
 !/test/
 !/prompts/
+!/assets/
 !/package.json
 !/package-lock.json
 !/tsconfig.json
